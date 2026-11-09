@@ -668,6 +668,12 @@ class AttachedPage {
     await wrapInternal(this._page, () => this._page.keyboard.up(params.key));
   }
 
+  async insertText(params: { text: string }) {
+    if (!params.text)
+      return;
+    await wrapInternal(this._page, () => this._page.keyboard.insertText(params.text));
+  }
+
   async startRecording() {
     const artifactsDir = this._owner.artifactsDirFor(this._page.context());
     this._recordingPath = path.join(artifactsDir, `recording-${Date.now()}.webm`);

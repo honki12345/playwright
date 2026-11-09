@@ -195,3 +195,53 @@ test('port dashboard owns the singleton and receives kill', async ({ cli, childP
   const { exitCode } = await serverProcess.exited;
   expect(exitCode).toBe(0);
 });
+
+async function openInteractiveTextArea({ boundBrowser, server, startDashboardServer }) {
+  server.setContent('/input', '<html><body style="margin:0"><textarea id="t" style="width:100vw;height:100vh;border:0"></textarea></body></html>', 'text/html');
+  const context = await boundBrowser.newContext();
+  const page = await context.newPage();
+  await page.goto(server.PREFIX + '/input');
+
+  const dashboard = await startDashboardServer();
+  await dashboard.getByRole('navigation', { name: 'Sessions' }).getByRole('option').first().click();
+  await expect(dashboard.locator('img#display')).toBeVisible();
+  await dashboard.getByRole('button', { name: 'Enable interactive mode' }).click();
+  await expect(dashboard.getByRole('main')).toHaveClass(/interactive/);
+  await dashboard.locator('img#display').click();
+  await expect(page.locator('#t')).toBeFocused();
+  const keySink = dashboard.getByRole('textbox', { name: 'Keyboard input' });
+  await expect(keySink).toBeFocused();
+  return { page, dashboard, keySink };
+}
+
+test('should insert IME-composed text in interactive mode', async ({ boundBrowser, server, startDashboardServer }) => {
+  const { page, keySink } = await openInteractiveTextArea({ boundBrowser, server, startDashboardServer });
+  await keySink.evaluate(el => el.dispatchEvent(new CompositionEvent('compositionend', { data: '한글 입력', bubbles: true })));
+  await expect(page.locator('#t')).toHaveValue('한글 입력');
+  await expect(keySink).toHaveValue('');
+});
+
+test('should insert pasted text in interactive mode', async ({ boundBrowser, server, startDashboardServer }) => {
+  const { page, keySink } = await openInteractiveTextArea({ boundBrowser, server, startDashboardServer });
+  await keySink.evaluate(el => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', 'pasted 텍스트');
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+  });
+  await expect(page.locator('#t')).toHaveValue('pasted 텍스트');
+});
+
+test('should release held keys when the screen loses focus', async ({ boundBrowser, server, startDashboardServer }) => {
+  const { page, dashboard, keySink } = await openInteractiveTextArea({ boundBrowser, server, startDashboardServer });
+  await dashboard.keyboard.press('b');
+  await expect(page.locator('#t')).toHaveValue('b');
+
+  // Shift goes down while focused, but its keyup happens elsewhere (e.g. after Cmd+Tab).
+  await dashboard.keyboard.down('Shift');
+  await keySink.evaluate(el => (el as HTMLElement).blur());
+  await dashboard.keyboard.up('Shift');
+
+  await dashboard.locator('img#display').click();
+  await dashboard.keyboard.press('a');
+  await expect(page.locator('#t')).toHaveValue('ba');
+});

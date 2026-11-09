@@ -82,6 +82,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
   const browserChromeRef = React.useRef<HTMLDivElement>(null);
   const interactiveBtnRef = React.useRef<HTMLButtonElement>(null);
   const moveThrottleRef = React.useRef(0);
+  // Hidden text field that receives keyboard focus for the screen, so that IME
+  // composition and clipboard paste work like in a regular text input.
+  const keySinkRef = React.useRef<HTMLTextAreaElement>(null);
+  // Keys forwarded as keydown that still need a matching keyup.
+  const pressedKeysRef = React.useRef(new Set<string>());
 
   const aspect = liveFrame && liveFrame.viewportWidth && liveFrame.viewportHeight
     ? liveFrame.viewportWidth / liveFrame.viewportHeight
@@ -171,9 +176,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
     model[method](x, y, BUTTONS[e.button] || 'left');
   }
 
+  function focusKeySink() {
+    keySinkRef.current?.focus({ preventScroll: true });
+  }
+
   function onScreenMouseDown(e: React.MouseEvent) {
     e.preventDefault();
-    screenRef.current?.focus();
+    // Keep the IME candidate window next to where the user clicked.
+    const sink = keySinkRef.current;
+    const screen = screenRef.current;
+    if (sink && screen) {
+      const rect = screen.getBoundingClientRect();
+      sink.style.left = `${e.clientX - rect.left}px`;
+      sink.style.top = `${e.clientY - rect.top}px`;
+    }
+    focusKeySink();
     if (!ready)
       return;
     if (!interactive) {
@@ -208,10 +225,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
     model.wheel(e.deltaX, e.deltaY);
   }
 
+  function isComposingKey(e: React.KeyboardEvent) {
+    return e.nativeEvent.isComposing || e.key === 'Process' || e.keyCode === 229;
+  }
+
+  function isPasteShortcut(e: React.KeyboardEvent) {
+    return (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'v';
+  }
+
+  function releasePressedKeys() {
+    for (const key of pressedKeysRef.current)
+      model.keyup(key);
+    pressedKeysRef.current.clear();
+  }
+
   function onScreenKeyDown(e: React.KeyboardEvent) {
     if (!interactive)
       return;
+    // Let the IME compose; the committed text arrives via compositionend.
+    if (isComposingKey(e))
+      return;
+    // Let the browser fire a native paste event; the text arrives via onPaste.
+    if (isPasteShortcut(e))
+      return;
     e.preventDefault();
+    pressedKeysRef.current.add(e.key);
     model.keydown(e.key);
   }
 
@@ -219,8 +257,44 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
     if (!interactive)
       return;
     e.preventDefault();
+    if (!pressedKeysRef.current.delete(e.key))
+      return;
     model.keyup(e.key);
   }
+
+  function onScreenCompositionEnd(e: React.CompositionEvent) {
+    const text = e.data;
+    if (keySinkRef.current)
+      keySinkRef.current.value = '';
+    if (!interactive || !text)
+      return;
+    model.insertText(text);
+  }
+
+  function onScreenPaste(e: React.ClipboardEvent) {
+    e.preventDefault();
+    if (!interactive)
+      return;
+    const text = e.clipboardData.getData('text/plain');
+    if (text)
+      model.insertText(text);
+  }
+
+  function onScreenBlur(e: React.FocusEvent) {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null))
+      return;
+    // Keyups that happen while unfocused (e.g. after Cmd+Tab) never reach us;
+    // release everything so the remote page does not keep modifiers held.
+    releasePressedKeys();
+  }
+
+  React.useEffect(() => {
+    if (interactive)
+      return;
+    for (const key of pressedKeysRef.current)
+      model.keyup(key);
+    pressedKeysRef.current.clear();
+  }, [interactive, model]);
 
   function onOmniboxKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter') {
@@ -388,8 +462,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
                   onWheel={onScreenWheel}
                   onKeyDown={onScreenKeyDown}
                   onKeyUp={onScreenKeyUp}
+                  onCompositionEnd={onScreenCompositionEnd}
+                  onPaste={onScreenPaste}
+                  onBlur={onScreenBlur}
+                  onFocus={e => {
+                    if (e.target === e.currentTarget)
+                      focusKeySink();
+                  }}
                   onContextMenu={e => e.preventDefault()}
                 >
+                  <textarea
+                    ref={keySinkRef}
+                    className='screen-key-sink'
+                    aria-label='Keyboard input'
+                    autoComplete='off'
+                    autoCorrect='off'
+                    autoCapitalize='off'
+                    spellCheck={false}
+                    tabIndex={-1}
+                  />
                   <img
                     ref={displayRef}
                     id='display'

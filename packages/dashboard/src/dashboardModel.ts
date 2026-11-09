@@ -189,6 +189,10 @@ export class DashboardModel {
     void this._client.keyup({ key });
   }
 
+  insertText(text: string) {
+    void this._client.insertText({ text });
+  }
+
   // Dashboard / page actions.
 
   toggleInteractive() {

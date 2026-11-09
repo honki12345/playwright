@@ -239,6 +239,21 @@
   width: 100%;
 }
 
+.screen-key-sink {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  resize: none;
+  overflow: hidden;
+  pointer-events: none;
+  caret-color: transparent;
+}
+
 .display {
   display: block;
   width: 100%;

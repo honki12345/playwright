@@ -92,6 +92,7 @@ export interface DashboardChannel {
   keydown(params: { key: string }): Promise<void>;
   keyup(params: { key: string }): Promise<void>;
   insertText(params: { text: string }): Promise<void>;
+  setComposition(params: { text: string }): Promise<void>;
   startRecording(): Promise<void>;
   stopRecording(): Promise<{ streamId: string }>;
   readStream(params: { streamId: string }): Promise<{ data: string; eof: boolean }>;

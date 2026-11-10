@@ -579,6 +579,9 @@ class AttachedPage {
   private _screencastRunning = false;
   private _recordingPath: string | null = null;
   private _disposed = false;
+  private _inputQueue: Promise<void> = Promise.resolve();
+  private _imeSessionPromise: Promise<api.CDPSession | undefined> | undefined;
+  private _imeComposing = false;
 
   constructor(owner: DashboardConnection, page: api.Page) {
     this._owner = owner;
@@ -612,6 +615,8 @@ class AttachedPage {
       wrapInternal(this._page, () => this._page.screencast.stop()).catch(() => {});
     this._screencastRunning = false;
     this._recordingPath = null;
+    void this._imeSessionPromise?.then(session => session?.detach()).catch(() => {});
+    this._imeSessionPromise = undefined;
   }
 
   async setScreencastActive(active: boolean) {
@@ -647,13 +652,17 @@ class AttachedPage {
   }
 
   async mousedown(params: { x: number; y: number; button?: 'left' | 'middle' | 'right' }) {
-    await wrapInternal(this._page, () => this._page.mouse.move(params.x, params.y));
-    await wrapInternal(this._page, () => this._page.mouse.down({ button: params.button || 'left' }));
+    await this._enqueueInput(async () => {
+      await wrapInternal(this._page, () => this._page.mouse.move(params.x, params.y));
+      await wrapInternal(this._page, () => this._page.mouse.down({ button: params.button || 'left' }));
+    });
   }
 
   async mouseup(params: { x: number; y: number; button?: 'left' | 'middle' | 'right' }) {
-    await wrapInternal(this._page, () => this._page.mouse.move(params.x, params.y));
-    await wrapInternal(this._page, () => this._page.mouse.up({ button: params.button || 'left' }));
+    await this._enqueueInput(async () => {
+      await wrapInternal(this._page, () => this._page.mouse.move(params.x, params.y));
+      await wrapInternal(this._page, () => this._page.mouse.up({ button: params.button || 'left' }));
+    });
   }
 
   async wheel(params: { deltaX: number; deltaY: number }) {
@@ -661,17 +670,61 @@ class AttachedPage {
   }
 
   async keydown(params: { key: string }) {
-    await wrapInternal(this._page, () => this._page.keyboard.down(params.key));
+    await this._enqueueInput(() => wrapInternal(this._page, () => this._page.keyboard.down(params.key)));
   }
 
   async keyup(params: { key: string }) {
-    await wrapInternal(this._page, () => this._page.keyboard.up(params.key));
+    await this._enqueueInput(() => wrapInternal(this._page, () => this._page.keyboard.up(params.key)));
   }
 
   async insertText(params: { text: string }) {
     if (!params.text)
       return;
-    await wrapInternal(this._page, () => this._page.keyboard.insertText(params.text));
+    await this._enqueueInput(async () => {
+      // Commit through the same session that holds the composition, so the
+      // composed text is replaced instead of inserted a second time.
+      const session = this._imeComposing ? await this._imeSession() : undefined;
+      this._imeComposing = false;
+      if (session) {
+        await wrapInternal(this._page, () => session.send('Input.insertText', { text: params.text }));
+        return;
+      }
+      await wrapInternal(this._page, () => this._page.keyboard.insertText(params.text));
+    });
+  }
+
+  // Mirrors an in-progress IME composition (e.g. a Korean syllable being
+  // assembled) on the remote page, so it shows up before it is committed.
+  // Only Chromium exposes this; other browsers get the text on commit.
+  async setComposition(params: { text: string }) {
+    await this._enqueueInput(async () => {
+      const session = await this._imeSession();
+      if (!session)
+        return;
+      const text = params.text || '';
+      await wrapInternal(this._page, () => session.send('Input.imeSetComposition', {
+        text,
+        selectionStart: text.length,
+        selectionEnd: text.length,
+      }));
+      this._imeComposing = !!text;
+    });
+  }
+
+  // Keyboard and IME calls must reach the page in the order the user typed
+  // them; composition and commit go over a separate CDP session.
+  private _enqueueInput(task: () => Promise<unknown>): Promise<void> {
+    const result = this._inputQueue.then(task).then(() => {});
+    this._inputQueue = result.catch(() => {});
+    return result;
+  }
+
+  private _imeSession(): Promise<api.CDPSession | undefined> {
+    if (!this._imeSessionPromise) {
+      this._imeSessionPromise = wrapInternal(this._page, () => this._page.context().newCDPSession(this._page))
+          .catch(() => undefined);
+    }
+    return this._imeSessionPromise;
   }
 
   async startRecording() {

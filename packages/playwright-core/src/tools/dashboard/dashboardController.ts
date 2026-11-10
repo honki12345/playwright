@@ -150,8 +150,12 @@ export class DashboardConnection implements Transport {
 
   async selectTab(params: { browser: string; context: string; page: string }) {
     const page = this._provider.findPage(params);
-    if (page)
+    if (page) {
+      // Headed browsers stop painting background tabs, so the screencast would
+      // deliver no frames until something else activated the tab.
+      await wrapInternal(page, () => page.bringToFront()).catch(() => {});
       await this._switchAttachedTo(page);
+    }
     this._pushTabs();
   }
 

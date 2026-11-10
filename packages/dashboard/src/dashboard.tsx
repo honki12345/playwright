@@ -87,6 +87,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
   const keySinkRef = React.useRef<HTMLTextAreaElement>(null);
   // Keys forwarded as keydown that still need a matching keyup.
   const pressedKeysRef = React.useRef(new Set<string>());
+  // Text of the IME composition in progress, mirrored on the remote page.
+  const compositionRef = React.useRef<string | null>(null);
+  // Set when we end a local composition ourselves and already committed it.
+  const skipCompositionEndRef = React.useRef(false);
 
   const aspect = liveFrame && liveFrame.viewportWidth && liveFrame.viewportHeight
     ? liveFrame.viewportWidth / liveFrame.viewportHeight
@@ -182,6 +186,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
 
   function onScreenMouseDown(e: React.MouseEvent) {
     e.preventDefault();
+    // Clicking elsewhere finishes the syllable being composed, like it does
+    // in a native text field; commit it before the click reaches the page.
+    if (compositionRef.current !== null)
+      finishComposition();
     // Keep the IME candidate window next to where the user clicked.
     const sink = keySinkRef.current;
     const screen = screenRef.current;
@@ -262,13 +270,77 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
     model.keyup(e.key);
   }
 
-  function onScreenCompositionEnd(e: React.CompositionEvent) {
-    const text = e.data;
-    if (keySinkRef.current)
-      keySinkRef.current.value = '';
-    if (!interactive || !text)
+  function clearKeySinkSoon() {
+    // Korean IMEs start the next syllable right after committing one; only
+    // clear the field once no composition is running.
+    setTimeout(() => {
+      if (compositionRef.current === null && keySinkRef.current)
+        keySinkRef.current.value = '';
+    }, 0);
+  }
+
+  function finishComposition() {
+    const text = compositionRef.current;
+    compositionRef.current = null;
+    if (interactive && text)
+      model.insertText(text);
+    else if (text)
+      model.setComposition('');
+    // Make the local IME drop the syllable we just committed; its
+    // compositionend must not commit it a second time.
+    skipCompositionEndRef.current = true;
+    keySinkRef.current?.blur();
+    clearKeySinkSoon();
+  }
+
+  function onScreenCompositionStart() {
+    compositionRef.current = '';
+    skipCompositionEndRef.current = false;
+  }
+
+  function onScreenCompositionUpdate(e: React.CompositionEvent) {
+    if (compositionRef.current === null)
+      compositionRef.current = '';
+    const text = e.data || '';
+    if (text === compositionRef.current)
       return;
-    model.insertText(text);
+    compositionRef.current = text;
+    if (interactive)
+      model.setComposition(text);
+  }
+
+  function onScreenCompositionEnd(e: React.CompositionEvent) {
+    const wasComposing = compositionRef.current;
+    compositionRef.current = null;
+    clearKeySinkSoon();
+    if (skipCompositionEndRef.current) {
+      skipCompositionEndRef.current = false;
+      return;
+    }
+    if (!interactive)
+      return;
+    const text = e.data;
+    if (text)
+      model.insertText(text);
+    else if (wasComposing)
+      model.setComposition('');
+  }
+
+  // Keys that end a composition (Space, Enter, punctuation) are reported as
+  // IME keys, so their keydown is not forwarded; forward what they insert.
+  function onScreenInput(e: React.FormEvent) {
+    const event = e.nativeEvent as InputEvent;
+    if (event.isComposing || event.inputType === 'insertCompositionText')
+      return;
+    clearKeySinkSoon();
+    if (!interactive)
+      return;
+    if (event.inputType === 'insertText' && event.data) {
+      model.insertText(event.data);
+    } else if (event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') {
+      model.keydown('Enter');
+      model.keyup('Enter');
+    }
   }
 
   function onScreenPaste(e: React.ClipboardEvent) {
@@ -294,6 +366,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
     for (const key of pressedKeysRef.current)
       model.keyup(key);
     pressedKeysRef.current.clear();
+    if (compositionRef.current) {
+      compositionRef.current = null;
+      model.setComposition('');
+    }
   }, [interactive, model]);
 
   function onOmniboxKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -462,7 +538,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ model }) => {
                   onWheel={onScreenWheel}
                   onKeyDown={onScreenKeyDown}
                   onKeyUp={onScreenKeyUp}
+                  onCompositionStart={onScreenCompositionStart}
+                  onCompositionUpdate={onScreenCompositionUpdate}
                   onCompositionEnd={onScreenCompositionEnd}
+                  onInput={onScreenInput}
                   onPaste={onScreenPaste}
                   onBlur={onScreenBlur}
                   onFocus={e => {

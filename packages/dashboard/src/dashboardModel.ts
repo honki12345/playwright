@@ -193,6 +193,10 @@ export class DashboardModel {
     void this._client.insertText({ text });
   }
 
+  setComposition(text: string) {
+    void this._client.setComposition({ text });
+  }
+
   // Dashboard / page actions.
 
   toggleInteractive() {

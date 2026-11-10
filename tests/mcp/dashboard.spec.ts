@@ -221,6 +221,52 @@ test('should insert IME-composed text in interactive mode', async ({ boundBrowse
   await expect(keySink).toHaveValue('');
 });
 
+test('should mirror IME composition before it is committed', async ({ boundBrowser, server, startDashboardServer }) => {
+  const { page, dashboard } = await openInteractiveTextArea({ boundBrowser, server, startDashboardServer });
+  const remote = page.locator('#t');
+  // Drive the dashboard's own IME the way a Korean input method does.
+  const ime = await dashboard.context().newCDPSession(dashboard);
+  const compose = (text: string) => ime.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
+  const commit = (text: string) => ime.send('Input.insertText', { text });
+
+  await compose('ㅎ');
+  await expect(remote).toHaveValue('ㅎ');
+  await compose('하');
+  await compose('한');
+  await expect(remote).toHaveValue('한');
+  await commit('한');
+  await compose('ㄱ');
+  await expect(remote).toHaveValue('한ㄱ');
+  await compose('그');
+  await compose('글');
+  await expect(remote).toHaveValue('한글');
+  await commit('글');
+  // Space after the last syllable is inserted by the IME, not as a key press.
+  await commit(' ');
+  await expect(remote).toHaveValue('한글 ');
+  await dashboard.keyboard.press('a');
+  await expect(remote).toHaveValue('한글 a');
+});
+
+test('should commit the composing syllable once when clicking the screen', async ({ boundBrowser, server, startDashboardServer }) => {
+  const { page, dashboard, keySink } = await openInteractiveTextArea({ boundBrowser, server, startDashboardServer });
+  const remote = page.locator('#t');
+  const ime = await dashboard.context().newCDPSession(dashboard);
+  await ime.send('Input.imeSetComposition', { text: '동', selectionStart: 1, selectionEnd: 1 });
+  await expect(remote).toHaveValue('동');
+
+  await dashboard.locator('img#display').click();
+  await expect(keySink).toBeFocused();
+  await dashboard.keyboard.press('a');
+  await expect(remote).toHaveValue('동a');
+});
+
+test('should forward Enter inserted by the IME after a composition', async ({ boundBrowser, server, startDashboardServer }) => {
+  const { page, keySink } = await openInteractiveTextArea({ boundBrowser, server, startDashboardServer });
+  await keySink.evaluate(el => el.dispatchEvent(new InputEvent('input', { inputType: 'insertLineBreak', bubbles: true })));
+  await expect(page.locator('#t')).toHaveValue('\n');
+});
+
 test('should insert pasted text in interactive mode', async ({ boundBrowser, server, startDashboardServer }) => {
   const { page, keySink } = await openInteractiveTextArea({ boundBrowser, server, startDashboardServer });
   await keySink.evaluate(el => {
